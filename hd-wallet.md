@@ -39,6 +39,7 @@ m / purpose' / coin_type' / account' / change / address_index
 ビットコインコアにもv0.13.0から導入され、正式にサポートされるようになりました。
 
 つまり、HD Walletの規格で生成された秘密鍵であれば、Seedさえあれば復元、再利用可能となり運用が楽になるというもの。
+1個の乱数からツリー構造的に多数アドレス（秘密鍵、公開鍵）を生成できる。
 下記は、階層化されたパスのイメージです。
 
 >> BIP32 Path level: マスター / アカウント' / 支払い or お釣り / アドレス
@@ -55,8 +56,8 @@ m / purpose' / coin_type' / account' / change / address_index
 m: マスター鍵
 purpose: 目的階層 44に設定された定数
 coin_type: コインの種類階層。通貨毎にスペースが決められている
-accoun: 使用目的階層。寄付目的 / 貯蓄目的 / 共通経費 など使用するユーザー側で決めることができる
-change: 受取階層。外部送金者からの受け取りが0 / 自身のトランザクションからのおつりの受け取りが1
+account: 使用目的階層。寄付目的 / 貯蓄目的 / 共通経費 など使用するユーザー側で決めることができる
+change: 受取階層。外部送金者（External）からの受取りが0 / 自身（Internal）のトランザクションからのおつりの受取りが1
 address_index: アドレス階層。インデックス値が振られる
 ```
 
@@ -100,14 +101,15 @@ master, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
 if err != nil {
    return err
 }
-master.ECPrivKey() // マスターの秘密鍵
 ```
 
 ---
 
 ## Purpose
 
-ここではどの仕様(BIP)に従っているかを示す。また、強化鍵導出のためインデックス値に2³¹を加算します
+ここではどの仕様(BIP)に従っているかを示す。また、強化鍵導出のためインデックス値に2³¹を加算します。
+強化導出？
+1つでもビットコインアドレスの秘密鍵が流出してしまうと、同じブランチの秘密鍵を全て算出されてしまう脆弱性があり、強化導出関数をセットすると、この脆弱性を回避できるらしい。
 
 ```golang
 
@@ -115,8 +117,9 @@ import (
 	"github.com/btcsuite/btcutil/hdkeychain"
 )
 
-// m/49'
-purpose, err := master.Child(49 + hdkeychain.HardenedKeyStart)
+// m/44'
+// BIP-49(P2SHでネストされたP2WPKHアドレス導出する場合は、49??)
+purpose, err := master.Child(44 + hdkeychain.HardenedKeyStart)
 if err != nil {
    return err
 }
@@ -127,7 +130,6 @@ if err != nil {
 ## CoinType
 
 ここではどの通貨に従っているかを示す。また、ここでも強化鍵導出のためインデックス値に2³¹を加算します。
-Coin Type のインデックスについては、こちらを参照
 
 ```golang
 
@@ -139,6 +141,15 @@ import (
 coinType, err := purpose.Child(1 + hdkeychain.HardenedKeyStart)
 if err != nil {
    return err
+}
+```
+
+Child関数内部で強化導出を使用してるかチェックしてるので、デフォルトで強化導出にしてしまってもいいような...
+
+```golang
+isChildHardened := i >= HardenedKeyStart
+if !k.isPrivate && isChildHardened {
+	return nil, ErrDeriveHardFromPublic
 }
 ```
 
@@ -184,7 +195,7 @@ if err != nil {
 
 ## Addess Index
 
-ここが末端となりここで生成された公開鍵を使ってアドレスを生成する、次回はこの公開鍵利用し P2SH アドレスを生成するところを纏める
+ここが末端となりここで生成された公開鍵を使ってアドレスを生成する
 
 ```golang
 
@@ -197,9 +208,58 @@ addressIndex, err := change.Child(0)
 if err != nil {
    return err
 }
+addressIndex.ECPubKey() // 公開鍵
 ```
 
 ---
 
-インポートする鍵はどれ？
-復元はどうやるの？
+## MultiSig Addressの実装
+
+MultiSigなので、複数の公開鍵が必要
+通常？のユースケースを考えると 署名用アカウントを別途作り、そのアカウトに紐づく公開鍵を使う
+
+また、btcsuiteが用意しているマルチシグアドレスの生成には、redeemScriptが必要で、redeemScriptをもとにアドレスを生成している。
+`txscript.MultiSigScript(addressPubKeys, len(addressPubKeys))`
+
+```golang
+func MultiSigScript(pubkeys []*btcutil.AddressPubKey, nrequired int) ([]byte, error) {
+	if len(pubkeys) < nrequired {
+		str := fmt.Sprintf("unable to generate multisig script with "+
+			"%d required signatures when there are only %d public "+
+			"keys available", nrequired, len(pubkeys))
+		return nil, scriptError(ErrTooManyRequiredSigs, str)
+	}
+
+	builder := NewScriptBuilder().AddInt64(int64(nrequired))
+	for _, key := range pubkeys {
+		builder.AddData(key.ScriptAddress())
+	}
+	builder.AddInt64(int64(len(pubkeys)))
+	builder.AddOp(OP_CHECKMULTISIG)
+
+	return builder.Script()
+}
+```
+
+---
+
+## MultiSig Addressの実装
+
+```golang
+// AddressPubKeyを使ってredeemScriptを作成する
+addressPubKeys := []*btcutil.AddressPubKey{addressPubKey1, addressPubKey2}
+// 2 of 2
+redeemScript, err := txscript.MultiSigScript(addressPubKeys, len(addressPubKeys))
+if err != nil {
+	return err
+}
+// redeemScriptよりMultiSig adddressを作成する
+ad, err := btcutil.NewAddressScriptHash(redeemScript, &chaincfg.MainNetParams)
+if err != nil {
+	return err
+}
+addr := ad.EncodeAddress()
+```
+
+
+---
