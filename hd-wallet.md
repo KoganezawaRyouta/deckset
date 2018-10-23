@@ -42,8 +42,8 @@ m / purpose' / coin_type' / account' / change / address_index
 1個の乱数からツリー構造的に多数アドレス（秘密鍵、公開鍵）を生成できる。
 下記は、階層化されたパスのイメージです。
 
->> BIP32 Path level: マスター / アカウント' / 支払い or お釣り / アドレス
->> BIP44 Path level: マスター / 仕様(BIP)' / 通貨' / アカウント' / 支払い or お釣り / アドレス
+- BIP32 Path level:マスター / アカウント' / 支払い or お釣り / アドレス
+- BIP44 Path level: マスター / 仕様(BIP)' / 通貨' / アカウント' / 支払い or お釣り / アドレス
 
 ---
 
@@ -144,13 +144,16 @@ if err != nil {
 }
 ```
 
-Child関数内部で強化導出を使用してるかチェックしてるので、デフォルトで強化導出にしてしまってもいいような...
+Child関数内部で強化導出を使用してるかチェックしてる
 
 ```golang
-isChildHardened := i >= HardenedKeyStart
-if !k.isPrivate && isChildHardened {
-	return nil, ErrDeriveHardFromPublic
+func (k *ExtendedKey) Child(i uint32) (*ExtendedKey, error) {
+  isChildHardened := i >= HardenedKeyStart
+  if !k.isPrivate && isChildHardened {
+  	return nil, ErrDeriveHardFromPublic
+  }
 }
+
 ```
 
 ---
