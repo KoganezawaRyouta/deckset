@@ -28,6 +28,11 @@ m / purpose' / coin_type' / account' / change / address_index
 
 使用言語：Golang
 使用ライブラリー：[btcsuite/btcutil](https://github.com/btcsuite/btcutil)
+import (
+  "github.com/btcsuite/btcd/chaincfg"
+  "github.com/btcsuite/btcutil/hdkeychain"
+  "github.com/btcsuite/btcd/txscript"
+)
 
 ---
 
@@ -39,7 +44,7 @@ m / purpose' / coin_type' / account' / change / address_index
 ビットコインコアにもv0.13.0から導入され、正式にサポートされるようになりました。
 
 つまり、HD Walletの規格で生成された秘密鍵であれば、Seedさえあれば復元、再利用可能となり運用が楽になるというもの。
-1個の乱数からツリー構造的に多数アドレス（秘密鍵、公開鍵）を生成できる。
+1個の乱数からツリー構造的に多数アドレス（秘密鍵、公開鍵）を生成できます。
 下記は、階層化されたパスのイメージです。
 
 - BIP32 Path level:マスター / アカウント' / 支払い or お釣り / アドレス
@@ -52,14 +57,14 @@ m / purpose' / coin_type' / account' / change / address_index
 
 階層別による仕様は下記になります。
 
-```
+
 m: マスター鍵
 purpose: 目的階層 44に設定された定数
 coin_type: コインの種類階層。通貨毎にスペースが決められている
 account: 使用目的階層。寄付目的 / 貯蓄目的 / 共通経費 など使用するユーザー側で決めることができる
 change: 受取階層。外部送金者（External）からの受取りが0 / 自身（Internal）のトランザクションからのおつりの受取りが1
 address_index: アドレス階層。インデックス値が振られる
-```
+
 
 [Coin types](https://github.com/satoshilabs/slips/blob/master/slip-0044.md#registered-coin-types)
 [Path Examples](https://github.com/bitcoin/bips/blob/master/bip-0044.mediawiki#examples)
@@ -70,7 +75,7 @@ address_index: アドレス階層。インデックス値が振られる
 
 基本的にHD Walletの実装では、hdkeychainパッケージに用意されています。
 シードの生成もこのパッケージにあるGenerateSeedファンクションを使えばよくて、
-シードの長さはBIP-0032で推奨されているバイト単位の長さ(256bits)も定数として定義されているので、それを使いましょう
+シードの長さはBIP-0032で推奨されているバイト単位の長さ(256bits：128bits〜512bits)も定数として定義されています
 
 ```golang
 import (
@@ -108,8 +113,9 @@ if err != nil {
 ## Purpose
 
 ここではどの仕様(BIP)に従っているかを示す。また、強化鍵導出のためインデックス値に2³¹を加算します。
-強化導出？
-1つでもビットコインアドレスの秘密鍵が流出してしまうと、同じブランチの秘密鍵を全て算出されてしまう脆弱性があり、強化導出関数をセットすると、この脆弱性を回避できるらしい。
+
+**強化鍵導出？**
+ 1つでもビットコインアドレスの秘密鍵が流出してしまうと、同じブランチの秘密鍵を全て算出されてしまう脆弱性があり、強化導出関数をセットすると、この脆弱性を回避できるらしい。
 
 ```golang
 
@@ -137,23 +143,11 @@ import (
 	"github.com/btcsuite/btcutil/hdkeychain"
 )
 
-// m/49'/1'
-coinType, err := purpose.Child(1 + hdkeychain.HardenedKeyStart)
+// m/44'/0'
+coinType, err := purpose.Child(0 + hdkeychain.HardenedKeyStart)
 if err != nil {
    return err
 }
-```
-
-Child関数内部で強化導出を使用してるかチェックしてる
-
-```golang
-func (k *ExtendedKey) Child(i uint32) (*ExtendedKey, error) {
-  isChildHardened := i >= HardenedKeyStart
-  if !k.isPrivate && isChildHardened {
-  	return nil, ErrDeriveHardFromPublic
-  }
-}
-
 ```
 
 ---
@@ -168,7 +162,7 @@ import (
 	"github.com/btcsuite/btcutil/hdkeychain"
 )
 
-// m/49'/1'/0'
+// m/44'/0'/0'
 account, err := coinType.Child(1 + hdkeychain.HardenedKeyStart)
 if err != nil {
    return err
@@ -187,7 +181,7 @@ import (
 	"github.com/btcsuite/btcutil/hdkeychain"
 )
 
-// m/49'/1'/0'/0
+// m/44'/0'/0'/0
 change, err := account.Child(0)
 if err != nil {
    return err
@@ -206,42 +200,12 @@ import (
 	"github.com/btcsuite/btcutil/hdkeychain"
 )
 
-// m/49'/1'/0'/0/0
+// m/44'/0'/0'/0/0
 addressIndex, err := change.Child(0)
 if err != nil {
    return err
 }
 addressIndex.ECPubKey() // 公開鍵
-```
-
----
-
-## MultiSig Addressの実装
-
-MultiSigなので、複数の公開鍵が必要
-通常？のユースケースを考えると 署名用アカウントを別途作り、そのアカウトに紐づく公開鍵を使う
-
-また、btcsuiteが用意しているマルチシグアドレスの生成には、redeemScriptが必要で、redeemScriptをもとにアドレスを生成している。
-`txscript.MultiSigScript(addressPubKeys, len(addressPubKeys))`
-
-```golang
-func MultiSigScript(pubkeys []*btcutil.AddressPubKey, nrequired int) ([]byte, error) {
-	if len(pubkeys) < nrequired {
-		str := fmt.Sprintf("unable to generate multisig script with "+
-			"%d required signatures when there are only %d public "+
-			"keys available", nrequired, len(pubkeys))
-		return nil, scriptError(ErrTooManyRequiredSigs, str)
-	}
-
-	builder := NewScriptBuilder().AddInt64(int64(nrequired))
-	for _, key := range pubkeys {
-		builder.AddData(key.ScriptAddress())
-	}
-	builder.AddInt64(int64(len(pubkeys)))
-	builder.AddOp(OP_CHECKMULTISIG)
-
-	return builder.Script()
-}
 ```
 
 ---
@@ -264,5 +228,28 @@ if err != nil {
 addr := ad.EncodeAddress()
 ```
 
+---
 
+## MultiSig Addressの実装
+
+
+```golang
+func MultiSigScript(pubkeys []*btcutil.AddressPubKey, nrequired int) ([]byte, error) {
+	if len(pubkeys) < nrequired {
+		str := fmt.Sprintf("unable to generate multisig script with "+
+			"%d required signatures when there are only %d public "+
+			"keys available", nrequired, len(pubkeys))
+		return nil, scriptError(ErrTooManyRequiredSigs, str)
+	}
+
+	builder := NewScriptBuilder().AddInt64(int64(nrequired))
+	for _, key := range pubkeys {
+		builder.AddData(key.ScriptAddress())
+	}
+	builder.AddInt64(int64(len(pubkeys)))
+	builder.AddOp(OP_CHECKMULTISIG)
+
+	return builder.Script()
+}
+```
 ---
